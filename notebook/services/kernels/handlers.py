@@ -318,6 +318,7 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
         self._kernel_info_future = Future()
         self._close_future = Future()
         self.session_key = ''
+        self.buffer_key = ''
 
         # Rate limiting code
         self._iopub_window_msg_count = 0
@@ -340,6 +341,7 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
         # servers never respond to websocket connection requests.
         kernel = self.kernel_manager.get_kernel(self.kernel_id)
         self.session.key = kernel.session.key
+        self.buffer_key = cast_unicode(kernel.session.key, "utf-8")
         future = self.request_kernel_info()
 
         def give_up():
@@ -379,9 +381,9 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
         km.notify_connect(kernel_id)
 
         # on new connections, flush the message buffer
-        buffer_info = km.get_buffer(kernel_id, self.session_key)
-        if buffer_info and buffer_info['session_key'] == self.session_key:
-            self.log.info("Restoring connection for %s", self.session_key)
+        buffer_info = km.get_buffer(kernel_id, self.buffer_key)
+        if buffer_info and buffer_info['session_key'] == self.buffer_key:
+            self.log.info("Restoring connection for %s", self.buffer_key)
             self.channels = buffer_info['channels']
             connected = self.nudge()
 
@@ -574,7 +576,7 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
 
             # start buffering instead of closing if this was the last connection
             if km._kernel_connections[self.kernel_id] == 0:
-                km.start_buffering(self.kernel_id, self.session_key, self.channels)
+                km.start_buffering(self.kernel_id, self.buffer_key, self.channels)
                 self._close_future.set_result(None)
                 return
 
