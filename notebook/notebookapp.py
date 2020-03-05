@@ -817,13 +817,29 @@ class NotebookApp(JupyterApp):
         """
     )
 
-    min_open_files_limit = Integer(4096, config=True,
+    min_open_files_limit = Integer(config=True,
         help="""
         Gets or sets a lower bound on the open file handles process resource
         limit. This may need to be increased if you run into an
         OSError: [Errno 24] Too many open files.
         This is not applicable when running on Windows.
         """)
+
+    @default('min_open_files_limit')
+    def _default_min_open_files_limit(self):
+        if resource is None:
+            # Ignoring min_open_files_limit because the limit cannot be adjusted (for example, on Windows)
+            return None
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+
+        DEFAULT_SOFT = 4096
+        if hard >= DEFAULT_SOFT:
+            return DEFAULT_SOFT
+
+        self.log.debug("Default value for min_open_files_limit is ignored (hard=%r, soft=%r)", hard, soft)
+
+        return soft
 
     @observe('token')
     def _token_changed(self, change):
@@ -1270,14 +1286,6 @@ class NotebookApp(JupyterApp):
             raise TraitError(trans.gettext("No such notebook dir: '%r'") % value)
         return value
 
-    @observe('notebook_dir')
-    def _update_notebook_dir(self, change):
-        """Do a bit of validation of the notebook dir."""
-        # setting App.notebook_dir implies setting notebook and kernel dirs as well
-        new = change['new']
-        self.config.FileContentsManager.root_dir = new
-        self.config.MappingKernelManager.root_dir = new
-
     # TODO: Remove me in notebook 5.0
     server_extensions = List(Unicode(), config=True,
         help=(_("DEPRECATED use the nbserver_extensions dict instead"))
@@ -1482,10 +1490,13 @@ class NotebookApp(JupyterApp):
                 self.http_server.listen(port, self.ip)
             except socket.error as e:
                 if e.errno == errno.EADDRINUSE:
-                    self.log.info(_('The port %i is already in use, trying another port.') % port)
+                    if self.port_retries:
+                        self.log.info(_('The port %i is already in use, trying another port.') % port)
+                    else:
+                        self.log.info(_('The port %i is already in use.') % port)
                     continue
                 elif e.errno in (errno.EACCES, getattr(errno, 'WSAEACCES', errno.EACCES)):
-                    self.log.warning(_("Permission to listen on port %i denied") % port)
+                    self.log.warning(_("Permission to listen on port %i denied.") % port)
                     continue
                 else:
                     raise
@@ -1494,8 +1505,12 @@ class NotebookApp(JupyterApp):
                 success = True
                 break
         if not success:
-            self.log.critical(_('ERROR: the notebook server could not be started because '
+            if self.port_retries:
+                self.log.critical(_('ERROR: the notebook server could not be started because '
                               'no available port could be found.'))
+            else:
+                self.log.critical(_('ERROR: the notebook server could not be started because '
+                              'port %i is not available.') % port)
             self.exit(1)
     
     @property
@@ -1707,8 +1722,42 @@ class NotebookApp(JupyterApp):
             pc = ioloop.PeriodicCallback(self.shutdown_no_activity, 60000)
             pc.start()
 
+    def _init_asyncio_patch(self):
+        """set default asyncio policy to be compatible with tornado
+
+        Tornado 6 (at least) is not compatible with the default
+        asyncio implementation on Windows
+
+        Pick the older SelectorEventLoopPolicy on Windows
+        if the known-incompatible default policy is in use.
+
+        do this as early as possible to make it a low priority and overrideable
+
+        ref: https://github.com/tornadoweb/tornado/issues/2608
+
+        FIXME: if/when tornado supports the defaults in asyncio,
+               remove and bump tornado requirement for py38
+        """
+        if sys.platform.startswith("win") and sys.version_info >= (3, 8):
+            import asyncio
+            try:
+                from asyncio import (
+                    WindowsProactorEventLoopPolicy,
+                    WindowsSelectorEventLoopPolicy,
+                )
+            except ImportError:
+                pass
+                # not affected
+            else:
+                if type(asyncio.get_event_loop_policy()) is WindowsProactorEventLoopPolicy:
+                    # WindowsProactorEventLoopPolicy is not compatible with tornado 6
+                    # fallback to the pre-3.8 default of Selector
+                    asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
+
     @catch_config_error
     def initialize(self, argv=None):
+        self._init_asyncio_patch()
+
         super(NotebookApp, self).initialize(argv)
         self.init_logging()
         if self._dispatching:
