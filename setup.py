@@ -110,12 +110,13 @@ for more information.
         'nbconvert',
         'ipykernel', # bless IPython kernel for now
         'Send2Trash',
-        'terminado>=0.8.1',
+        'terminado>=0.8.3',
         'prometheus_client'
     ],
     extras_require = {
         'test': ['nose', 'coverage', 'requests', 'nose_warnings_filters',
-                 'nbval', 'nose-exclude', 'selenium', 'pytest', 'pytest-cov'],
+                 'nbval', 'nose-exclude', 'selenium', 'pytest', 'pytest-cov',
+                 'requests-unixsocket'],
         'test:sys_platform == "win32"': ['nose-exclude'],
     },
     python_requires = '>=3.5',
