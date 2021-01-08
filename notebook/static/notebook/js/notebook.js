@@ -12,6 +12,7 @@ define([
     'base/js/utils',
     'base/js/i18n',
     'base/js/dialog',
+    'base/js/markdown',
     './cell',
     './textcell',
     './codecell',
@@ -19,10 +20,9 @@ define([
     'services/config',
     'services/sessions/session',
     './celltoolbar',
-    'components/marked/lib/marked',
     'codemirror/lib/codemirror',
     'codemirror/addon/runmode/runmode',
-    './mathjaxutils',
+    'base/js/mathjaxutils',
     'base/js/keyboard',
     './tooltip',
     './celltoolbarpresets/default',
@@ -40,6 +40,7 @@ define([
     utils,
     i18n,
     dialog,
+    markdown,
     cellmod,
     textcell,
     codecell,
@@ -47,7 +48,6 @@ define([
     configmod,
     session,
     celltoolbar,
-    marked,
     CodeMirror,
     runMode,
     mathjaxutils,
@@ -115,46 +115,6 @@ define([
         this.save_widget.notebook = this;
         
         mathjaxutils.init();
-
-        if (marked) {
-            marked.setOptions({
-                gfm : true,
-                tables: true,
-                // FIXME: probably want central config for CodeMirror theme when we have js config
-                langPrefix: "cm-s-ipython language-",
-                highlight: function(code, lang, callback) {
-                    if (!lang) {
-                        // no language, no highlight
-                        if (callback) {
-                            callback(null, code);
-                            return;
-                        } else {
-                            return code;
-                        }
-                    }
-                    utils.requireCodeMirrorMode(lang, function (spec) {
-                        var el = document.createElement("div");
-                        var mode = CodeMirror.getMode({}, spec);
-                        if (!mode) {
-                            console.log("No CodeMirror mode: " + lang);
-                            callback(null, code);
-                            return;
-                        }
-                        try {
-                            CodeMirror.runMode(code, spec, el);
-                            callback(null, el.innerHTML);
-                        } catch (err) {
-                            console.log("Failed to highlight " + lang + " code", err);
-                            callback(err, code);
-                        }
-                    }, function (err) {
-                        console.log("No CodeMirror mode: " + lang);
-                        console.log("Require CodeMirror mode error: " + err);
-                        callback(null, code);
-                    });
-                }
-            });
-        }
 
         this.element = $(selector);
         this.element.scroll();
@@ -688,6 +648,27 @@ define([
      */
     Notebook.prototype.toggle_all_line_numbers = function () {
         this.line_numbers = !this.line_numbers;
+    };
+
+    /**
+     * Reads direction settings (LTR/RTL) from notebook/cells metadata
+     * and applies them to display elements.
+     */
+    Notebook.prototype.apply_directionality = function () {
+        var notebook_direction = this.metadata.direction || 'ltr';
+        // html
+        document.body.setAttribute('dir', notebook_direction);
+        // existing cells
+        this.get_cells().forEach( function(cell) {
+            if (cell.cell_type == 'markdown') {
+                cell.code_mirror.setOption('direction', cell.metadata.direction || notebook_direction);
+                cell.element.find('.rendered_html').attr('dir', cell.metadata.direction || notebook_direction);
+            } else if (cell.cell_type == 'code') {
+                cell.element.find('.output_text').attr('dir', cell.metadata.direction || 'auto');
+            }
+        });
+        // new cells
+        textcell.MarkdownCell.options_default.cm_config.direction = notebook_direction;
     };
 
     /**
@@ -1420,6 +1401,28 @@ define([
         var len = this.ncells();
         return this.insert_cell_below(type,len-1);
     };
+
+    /**
+     * Transfer contents from one cell to a new type cell
+     */
+    Notebook.prototype.transfer_to_new_cell = function (source_cell, target_cell){
+        var text = source_cell.get_text();
+
+        if (text === source_cell.placeholder) {
+            text = '';
+        }
+        // metadata
+        target_cell.metadata = source_cell.metadata;
+        target_cell.attachments = source_cell.attachments;
+
+        // We must show the editor before setting its contents
+        target_cell.unrender();
+        target_cell.set_text(text);
+        // make this value the starting point, so that we can only undo
+        // to this state, instead of a blank cell
+        target_cell.code_mirror.clearHistory();
+        source_cell.element.remove();
+    }
     
     /**
      * Turn one or more cells into code.
@@ -1497,23 +1500,10 @@ define([
 
             if (!(source_cell instanceof textcell.MarkdownCell) && source_cell.is_editable()) {
                 var target_cell = this.insert_cell_below('markdown',i);
-                var text = source_cell.get_text();
 
-                if (text === source_cell.placeholder) {
-                    text = '';
-                }
-                // metadata
-                target_cell.metadata = source_cell.metadata;
-                target_cell.attachments = source_cell.attachments;
-
-                // We must show the editor before setting its contents
-                target_cell.unrender();
-                target_cell.set_text(text);
-                // make this value the starting point, so that we can only undo
-                // to this state, instead of a blank cell
-                target_cell.code_mirror.clearHistory();
-                source_cell.element.remove();
+                this.transfer_to_new_cell(source_cell, target_cell);
                 this.select(i);
+
                 if ((source_cell instanceof textcell.TextCell) && source_cell.rendered) {
                     target_cell.render();
                 }
@@ -1552,24 +1542,10 @@ define([
 
             if (!(source_cell instanceof textcell.RawCell) && source_cell.is_editable()) {
                 target_cell = this.insert_cell_below('raw',i);
-                var text = source_cell.get_text();
-                if (text === source_cell.placeholder) {
-                    text = '';
-                }
-                //metadata
-                target_cell.metadata = source_cell.metadata;
-                // attachments (we transfer them so they aren't lost if the
-                // cell is turned back into markdown)
-                target_cell.attachments = source_cell.attachments;
-
-                // We must show the editor before setting its contents
-                target_cell.unrender();
-                target_cell.set_text(text);
-                // make this value the starting point, so that we can only undo
-                // to this state, instead of a blank cell
-                target_cell.code_mirror.clearHistory();
-                source_cell.element.remove();
+                
+                this.transfer_to_new_cell(source_cell, target_cell);
                 this.select(i);
+                
                 var cursor = source_cell.code_mirror.getCursor();
                 target_cell.code_mirror.setCursor(cursor);
                 this.set_dirty(true);
@@ -1624,17 +1600,11 @@ define([
         var that = this;
         if (!this.paste_enabled) {
             $('#paste_cell_replace').removeClass('disabled')
-                .on('click', function () {that.keyboard_manager.actions.call(
-                    'jupyter-notebook:paste-cell-replace');});
-            $('#paste_cell_replace > a').attr('aria-disabled', 'false'); 
+            $('#paste_cell_replace > a').attr('aria-disabled', 'false');
             $('#paste_cell_above').removeClass('disabled')
-                .on('click', function () {that.keyboard_manager.actions.call(
-                    'jupyter-notebook:paste-cell-above');});
-            $('#paste_cell_above > a').attr('aria-disabled', 'false'); 
+            $('#paste_cell_above > a').attr('aria-disabled', 'false');
             $('#paste_cell_below').removeClass('disabled')
-                .on('click', function () {that.keyboard_manager.actions.call(
-                    'jupyter-notebook:paste-cell-below');});
-            $('#paste_cell_below > a').attr('aria-disabled', 'false');         
+            $('#paste_cell_below > a').attr('aria-disabled', 'false');
             this.paste_enabled = true;
         }
     };
@@ -1644,12 +1614,12 @@ define([
      */
     Notebook.prototype.disable_paste = function () {
         if (this.paste_enabled) {
-            $('#paste_cell_replace').addClass('disabled').off('click');
-            $('#paste_cell_replace > a').attr('aria-disabled', 'true'); 
-            $('#paste_cell_above').addClass('disabled').off('click');
-            $('#paste_cell_above > a').attr('aria-disabled', 'true'); 
-            $('#paste_cell_below').addClass('disabled').off('click');
-            $('#paste_cell_below > a').attr('aria-disabled', 'true'); 
+            $('#paste_cell_replace').addClass('disabled');
+            $('#paste_cell_replace > a').attr('aria-disabled', 'true');
+            $('#paste_cell_above').addClass('disabled');
+            $('#paste_cell_above > a').attr('aria-disabled', 'true');
+            $('#paste_cell_below').addClass('disabled');
+            $('#paste_cell_below > a').attr('aria-disabled', 'true');
             this.paste_enabled = false;
         }
     };
@@ -1761,18 +1731,19 @@ define([
     Notebook.prototype.split_cell = function () {
         var cell = this.get_selected_cell();
         if (cell.is_splittable()) {
-            var texta = cell.get_pre_cursor();
-            var textb = cell.get_post_cursor();
-            // current cell becomes the second one
+            var text_list = cell.get_split_text();
+            for (var i = 0; i < text_list.length-1; i++) {
+                // Create new cell with same type
+                var new_cell = this.insert_cell_above(cell.cell_type);
+                // Unrender the new cell so we can call set_text.
+                new_cell.unrender();
+                new_cell.set_text(text_list[i]);
+                // Duplicate metadata
+                new_cell.metadata = JSON.parse(JSON.stringify(cell.metadata));
+            }
+            // Original cell becomes the last one
             // so we don't need to worry about selection
-            cell.set_text(textb);
-            // create new cell with same type
-            var new_cell = this.insert_cell_above(cell.cell_type);
-            // Unrender the new cell so we can call set_text.
-            new_cell.unrender();
-            new_cell.set_text(texta);
-            // duplicate metadata
-            new_cell.metadata = JSON.parse(JSON.stringify(cell.metadata));
+            cell.set_text(text_list[text_list.length-1]);
         }
     };
 
@@ -2666,6 +2637,9 @@ define([
             this.trusted = trusted;
             this.events.trigger("trust_changed.Notebook", trusted);
         }
+
+        this.apply_directionality();
+
     };
 
     /**
@@ -2906,6 +2880,14 @@ define([
                     click: function() {
                         var nb_path = d.find('input').val();
                         var nb_name = nb_path.split('/').slice(-1).pop();
+                        if (!nb_name) {
+                            $(".save-message").html(
+                                    $("<span>")
+                                        .attr("style", "color:red;")
+                                        .text($(".save-message").text())
+                                );
+                            return false;
+                        }
                         // If notebook name does not contain extension '.ipynb' add it
                         var ext = utils.splitext(nb_name)[1];
                         if (ext === '') {
@@ -2918,13 +2900,16 @@ define([
                                 'content': that.toJSON(),
                                 'name': nb_name
                             };
+                            var start = new Date().getTime();
                             return that.contents.save(nb_path, model)
                                 .then(function(data) {
                                     d.modal('hide');
+                                    that.writable = true;
                                     that.notebook_name = data.name;
                                     that.notebook_path = data.path;
                                     that.session.rename_notebook(data.path);
                                     that.events.trigger('notebook_renamed.Notebook', data);
+                                    that.save_notebook_success(start, data);
                                 }, function(error) {
                                     var msg = i18n.msg._(error.message || 'Unknown error saving notebook');
                                     $(".save-message").html(

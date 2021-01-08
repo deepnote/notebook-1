@@ -1,4 +1,3 @@
-# coding: utf-8
 """Tornado handlers for WebSocket <-> ZMQ sockets."""
 
 # Copyright (c) Jupyter Development Team.
@@ -41,8 +40,6 @@ def serialize_binary_message(msg):
     # don't modify msg or buffer list in-place
     msg = msg.copy()
     buffers = list(msg.pop('buffers'))
-    if sys.version_info < (3, 4):
-        buffers = [x.tobytes() for x in buffers]
     bmsg = json.dumps(msg, default=date_default).encode('utf8')
     buffers.insert(0, bmsg)
     nbufs = len(buffers)
@@ -289,7 +286,7 @@ class AuthenticatedZMQStreamHandler(ZMQStreamHandler, IPythonHandler):
         # assign and yield in two step to avoid tornado 3 issues
         res = self.pre_get()
         yield maybe_future(res)
-        res = super(AuthenticatedZMQStreamHandler, self).get(*args, **kwargs)
+        res = super().get(*args, **kwargs)
         yield maybe_future(res)
 
     def initialize(self):

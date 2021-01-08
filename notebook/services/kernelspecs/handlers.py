@@ -27,7 +27,6 @@ def kernelspec_model(handler, name, spec_dict, resource_dir):
     }
 
     # Add resource files if they exist
-    resource_dir = resource_dir
     for resource in ['kernel.js', 'kernel.css']:
         if os.path.exists(pjoin(resource_dir, resource)):
             d['resources'][resource] = url_path_join(
@@ -87,8 +86,8 @@ class KernelSpecHandler(APIHandler):
         kernel_name = url_unescape(kernel_name)
         try:
             spec = yield maybe_future(ksm.get_kernel_spec(kernel_name))
-        except KeyError:
-            raise web.HTTPError(404, u'Kernel spec %s not found' % kernel_name)
+        except KeyError as e:
+            raise web.HTTPError(404, u'Kernel spec %s not found' % kernel_name) from e
         if is_kernelspec_model(spec):
             model = spec
         else:

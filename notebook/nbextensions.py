@@ -1,10 +1,7 @@
-# coding: utf-8
 """Utilities for installing Javascript extensions for the notebook"""
 
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
-
-from __future__ import print_function
 
 import os
 import shutil
@@ -980,7 +977,7 @@ class NBExtensionApp(BaseExtensionApp):
 
     def start(self):
         """Perform the App's functions as configured"""
-        super(NBExtensionApp, self).start()
+        super().start()
 
         # The above should have called a subcommand and raised NoStart; if we
         # get here, it didn't, so we should self.log.info a message.

@@ -27,14 +27,14 @@ class LargeFileManager(FileContentsManager):
                 if chunk == 1:
                     self.log.debug("Saving %s", os_path)
                     self.run_pre_save_hook(model=model, path=path)
-                    super(LargeFileManager, self)._save_file(os_path, model['content'], model.get('format'))
+                    super()._save_file(os_path, model['content'], model.get('format'))
                 else:
                     self._save_large_file(os_path, model['content'], model.get('format'))
             except web.HTTPError:
                 raise
             except Exception as e:
                 self.log.error(u'Error while saving file: %s %s', path, e, exc_info=True)
-                raise web.HTTPError(500, u'Unexpected error while saving file: %s %s' % (path, e))
+                raise web.HTTPError(500, u'Unexpected error while saving file: %s %s' % (path, e)) from e
 
             model = self.get(path, content=False)
 
@@ -43,7 +43,7 @@ class LargeFileManager(FileContentsManager):
                 self.run_post_save_hook(model=model, os_path=os_path)
             return model
         else:
-            return super(LargeFileManager, self).save(model, path)
+            return super().save(model, path)
 
     def _save_large_file(self, os_path, content, format):
         """Save content of a generic file."""
@@ -61,7 +61,7 @@ class LargeFileManager(FileContentsManager):
         except Exception as e:
             raise web.HTTPError(
                 400, u'Encoding error saving %s: %s' % (os_path, e)
-            )
+            ) from e
 
         with self.perm_to_403(os_path):
             if os.path.islink(os_path):

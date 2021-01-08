@@ -1,10 +1,7 @@
-# coding: utf-8
 """Utilities for installing server extensions for the notebook"""
 
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
-
-from __future__ import print_function
 
 import importlib
 import sys
@@ -291,7 +288,7 @@ class ServerExtensionApp(BaseExtensionApp):
 
     def start(self):
         """Perform the App's actions as configured"""
-        super(ServerExtensionApp, self).start()
+        super().start()
 
         # The above should have called a subcommand and raised NoStart; if we
         # get here, it didn't, so we should self.log.info a message.

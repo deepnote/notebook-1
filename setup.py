@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """Setup script for Jupyter Notebook"""
 
 #-----------------------------------------------------------------------------
@@ -93,7 +92,8 @@ for more information.
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.5',
         'Programming Language :: Python :: 3.6',
-        'Programming Language :: Python :: 3.7'
+        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8'
     ],
     zip_safe = False,
     install_requires = [
@@ -102,6 +102,7 @@ for more information.
         # pyzmq>=17 is not technically necessary,
         # but hopefully avoids incompatibilities with Tornado 5. April 2018
         'pyzmq>=17',
+        'argon2-cffi',
         'ipython_genutils',
         'traitlets>=4.2.1',
         'jupyter_core>=4.6.1',
@@ -109,14 +110,16 @@ for more information.
         'nbformat',
         'nbconvert',
         'ipykernel', # bless IPython kernel for now
-        'Send2Trash',
-        'terminado>=0.8.1',
+        'Send2Trash>=1.5.0',
+        'terminado>=0.8.3',
         'prometheus_client'
     ],
     extras_require = {
-        'test': ['nose', 'coverage', 'requests', 'nose_warnings_filters',
-                 'nbval', 'nose-exclude', 'selenium', 'pytest', 'pytest-cov'],
-        'test:sys_platform == "win32"': ['nose-exclude'],
+        'test': ['pytest', 'coverage', 'requests',
+                 'nbval', 'selenium', 'pytest', 'pytest-cov'],
+        'docs': ['sphinx', 'nbsphinx', 'sphinxcontrib_github_alt', 'sphinx_rtd_theme'],
+        'test:sys_platform != "win32"': ['requests-unixsocket'],
+        'json-logging': ['json-logging']
     },
     python_requires = '>=3.5',
     entry_points = {

@@ -4,6 +4,7 @@
 import os
 import logging
 import mimetypes
+import random
 
 from ..base.handlers import APIHandler, IPythonHandler
 from ..utils import url_path_join
@@ -31,6 +32,9 @@ class WebSocketChannelsHandler(WebSocketHandler, IPythonHandler):
     gateway = None
     kernel_id = None
     ping_callback = None
+
+    def check_origin(self, origin=None):
+        return IPythonHandler.check_origin(self, origin)
 
     def set_default_headers(self):
         """Undo the set_default_headers in IPythonHandler which doesn't make sense for websockets"""
@@ -65,7 +69,7 @@ class WebSocketChannelsHandler(WebSocketHandler, IPythonHandler):
     def get(self, kernel_id, *args, **kwargs):
         self.authenticate()
         self.kernel_id = cast_unicode(kernel_id, 'ascii')
-        yield super(WebSocketChannelsHandler, self).get(kernel_id=kernel_id, *args, **kwargs)
+        yield super().get(kernel_id=kernel_id, *args, **kwargs)
 
     def send_ping(self):
         if self.ws_connection is None and self.ping_callback is not None:
@@ -94,7 +98,7 @@ class WebSocketChannelsHandler(WebSocketHandler, IPythonHandler):
         if self.ws_connection:  # prevent WebSocketClosedError
             if isinstance(message, bytes):
                 binary = True
-            super(WebSocketChannelsHandler, self).write_message(message, binary=binary)
+            super().write_message(message, binary=binary)
         elif self.log.isEnabledFor(logging.DEBUG):
             msg_summary = WebSocketChannelsHandler._get_message_summary(json_decode(utf8(message)))
             self.log.debug("Notebook client closed websocket connection - message dropped: {}".format(msg_summary))
@@ -102,7 +106,7 @@ class WebSocketChannelsHandler(WebSocketHandler, IPythonHandler):
     def on_close(self):
         self.log.debug("Closing websocket connection %s", self.request.path)
         self.gateway.on_close()
-        super(WebSocketChannelsHandler, self).on_close()
+        super().on_close()
 
     @staticmethod
     def _get_message_summary(message):
@@ -126,11 +130,12 @@ class GatewayWebSocketClient(LoggingConfigurable):
     """Proxy web socket connection to a kernel/enterprise gateway."""
 
     def __init__(self, **kwargs):
-        super(GatewayWebSocketClient, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.kernel_id = None
         self.ws = None
         self.ws_future = Future()
         self.disconnected = False
+        self.retry = 0
 
     @gen.coroutine
     def _connect(self, kernel_id):
@@ -152,6 +157,7 @@ class GatewayWebSocketClient(LoggingConfigurable):
     def _connection_done(self, fut):
         if not self.disconnected and fut.exception() is None:  # prevent concurrent.futures._base.CancelledError
             self.ws = fut.result()
+            self.retry = 0
             self.log.debug("Connection is ready: ws: {}".format(self.ws))
         else:
             self.log.warning("Websocket connection has been closed via client disconnect or due to error.  "
@@ -186,8 +192,15 @@ class GatewayWebSocketClient(LoggingConfigurable):
             else:  # ws cancelled - stop reading
                 break
 
-        if not self.disconnected: # if websocket is not disconnected by client, attept to reconnect to Gateway
-            self.log.info("Attempting to re-establish the connection to Gateway: {}".format(self.kernel_id))
+        # NOTE(esevan): if websocket is not disconnected by client, try to reconnect.
+        if not self.disconnected and self.retry < GatewayClient.instance().gateway_retry_max:
+            jitter = random.randint(10, 100) * 0.01
+            retry_interval = min(GatewayClient.instance().gateway_retry_interval * (2 ** self.retry),
+                                 GatewayClient.instance().gateway_retry_interval_max) + jitter
+            self.retry += 1
+            self.log.info("Attempting to re-establish the connection to Gateway in %s secs (%s/%s): %s",
+                          retry_interval, self.retry, GatewayClient.instance().gateway_retry_max, self.kernel_id)
+            yield gen.sleep(retry_interval)
             self._connect(self.kernel_id)
             loop = IOLoop.current()
             loop.add_future(self.ws_future, lambda future: self._read_messages(callback))

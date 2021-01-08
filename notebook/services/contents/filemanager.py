@@ -15,6 +15,7 @@ import mimetypes
 import nbformat
 
 from send2trash import send2trash
+from send2trash.exceptions import TrashPermissionError
 from tornado import web
 
 from .filecheckpoints import FileCheckpoints
@@ -131,7 +132,8 @@ class FileContentsManager(FileManagerMixin, ContentsManager):
                 self.post_save_hook(os_path=os_path, model=model, contents_manager=self)
             except Exception as e:
                 self.log.error("Post-save hook failed o-n %s", os_path, exc_info=True)
-                raise web.HTTPError(500, u'Unexpected error while running post hook save: %s' % e)
+                raise web.HTTPError(500, u'Unexpected error while running post hook save: %s'
+                                    % e) from e
 
     @validate('root_dir')
     def _validate_root_dir(self, proposal):
@@ -330,12 +332,20 @@ class FileContentsManager(FileManagerMixin, ContentsManager):
                     self.log.debug("%s not a regular file", os_path)
                     continue
 
-                if self.should_list(name):
-                    if self.allow_hidden or not is_file_hidden(os_path, stat_res=st):
-                        contents.append(
-                                self.get(path='%s/%s' % (path, name), content=False)
+                try:
+                    if self.should_list(name):
+                        if self.allow_hidden or not is_file_hidden(os_path, stat_res=st):
+                            contents.append(
+                                    self.get(path='%s/%s' % (path, name), content=False)
+                            )
+                except OSError as e:
+                    # ELOOP: recursive symlink
+                    if e.errno != errno.ELOOP:
+                        self.log.warning(
+                            "Unknown error checking if file %r is hidden",
+                            os_path,
+                            exc_info=True,
                         )
-
             model['format'] = 'json'
 
         return model
@@ -479,7 +489,8 @@ class FileContentsManager(FileManagerMixin, ContentsManager):
             raise
         except Exception as e:
             self.log.error(u'Error while saving file: %s %s', path, e, exc_info=True)
-            raise web.HTTPError(500, u'Unexpected error while saving file: %s %s' % (path, e))
+            raise web.HTTPError(500, u'Unexpected error while saving file: %s %s' %
+                                (path, e)) from e
 
         validation_message = None
         if model['type'] == 'notebook':
@@ -502,17 +513,6 @@ class FileContentsManager(FileManagerMixin, ContentsManager):
         if not os.path.exists(os_path):
             raise web.HTTPError(404, u'File or directory does not exist: %s' % os_path)
 
-        def _check_trash(os_path):
-            if sys.platform in {'win32', 'darwin'}:
-                return True
-
-            # It's a bit more nuanced than this, but until we can better
-            # distinguish errors from send2trash, assume that we can only trash
-            # files on the same partition as the home directory.
-            file_dev = os.stat(os_path).st_dev
-            home_dev = os.stat(os.path.expanduser('~')).st_dev
-            return file_dev == home_dev
-
         def is_non_empty_dir(os_path):
             if os.path.isdir(os_path):
                 # A directory containing only leftover checkpoints is
@@ -528,16 +528,12 @@ class FileContentsManager(FileManagerMixin, ContentsManager):
                 # send2trash can really delete files on Windows, so disallow
                 # deleting non-empty files. See Github issue 3631.
                 raise web.HTTPError(400, u'Directory %s not empty' % os_path)
-            if _check_trash(os_path):
+            try:
                 self.log.debug("Sending %s to trash", os_path)
-                # Looking at the code in send2trash, I don't think the errors it
-                # raises let us distinguish permission errors from other errors in
-                # code. So for now, just let them all get logged as server errors.
                 send2trash(os_path)
                 return
-            else:
-                self.log.warning("Skipping trash for %s, on different device "
-                                 "to home directory", os_path)
+            except TrashPermissionError as e:
+                self.log.warning("Skipping trash for %s, %s", os_path, e)
 
         if os.path.isdir(os_path):
             # Don't permanently delete non-empty directories.
@@ -558,6 +554,10 @@ class FileContentsManager(FileManagerMixin, ContentsManager):
         if new_path == old_path:
             return
 
+        # Perform path validation prior to converting to os-specific value since this
+        # is still relative to root_dir.
+        self._validate_path(new_path)
+
         new_os_path = self._get_os_path(new_path)
         old_os_path = self._get_os_path(old_path)
 
@@ -572,7 +572,8 @@ class FileContentsManager(FileManagerMixin, ContentsManager):
         except web.HTTPError:
             raise
         except Exception as e:
-            raise web.HTTPError(500, u'Unknown error renaming file: %s %s' % (old_path, e))
+            raise web.HTTPError(500, u'Unknown error renaming file: %s %s' %
+                                (old_path, e)) from e
 
     def info_string(self):
         return _("Serving notebooks from local directory: %s") % self.root_dir
@@ -586,3 +587,23 @@ class FileContentsManager(FileManagerMixin, ContentsManager):
         else:
             parent_dir = ''
         return parent_dir
+
+    @staticmethod
+    def _validate_path(path):
+        """Checks if the path contains invalid characters relative to the current platform"""
+
+        if sys.platform == 'win32':
+            # On Windows systems, we MUST disallow colons otherwise an Alternative Data Stream will
+            # be created and confusion will reign! (See https://github.com/jupyter/notebook/issues/5190)
+            # Go ahead and add other invalid (and non-path-separator) characters here as well so there's
+            # consistent behavior - although all others will result in '[Errno 22]Invalid Argument' errors.
+            invalid_chars = '?:><*"|'
+        else:
+            # On non-windows systems, allow the underlying file creation to perform enforcement when appropriate
+            invalid_chars = ''
+
+        for char in invalid_chars:
+            if char in path:
+                raise web.HTTPError(400, "Path '{}' contains characters that are invalid for the filesystem. "
+                                         "Path names on this filesystem cannot contain any of the following "
+                                         "characters: {}".format(path, invalid_chars))

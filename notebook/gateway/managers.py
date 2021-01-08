@@ -15,14 +15,14 @@ from ..services.sessions.sessionmanager import SessionManager
 from jupyter_client.kernelspec import KernelSpecManager
 from ..utils import url_path_join
 
-from traitlets import Instance, Unicode, Float, Bool, default, validate, TraitError
+from traitlets import Instance, Unicode, Int, Float, Bool, default, validate, TraitError
 from traitlets.config import SingletonConfigurable
 
 
 class GatewayClient(SingletonConfigurable):
     """This class manages the configuration.  It's its own singleton class so that we
        can share these values across all objects.  It also contains some helper methods
-        to build request arguments out of the various config options.
+       to build request arguments out of the various config options.
 
     """
 
@@ -102,7 +102,7 @@ class GatewayClient(SingletonConfigurable):
     def _kernelspecs_resource_endpoint_default(self):
         return os.environ.get(self.kernelspecs_resource_endpoint_env, self.kernelspecs_resource_endpoint_default_value)
 
-    connect_timeout_default_value = 60.0
+    connect_timeout_default_value = 40.0
     connect_timeout_env = 'JUPYTER_GATEWAY_CONNECT_TIMEOUT'
     connect_timeout = Float(default_value=connect_timeout_default_value, config=True,
         help="""The time allowed for HTTP connection establishment with the Gateway server.
@@ -112,7 +112,7 @@ class GatewayClient(SingletonConfigurable):
     def connect_timeout_default(self):
         return float(os.environ.get('JUPYTER_GATEWAY_CONNECT_TIMEOUT', self.connect_timeout_default_value))
 
-    request_timeout_default_value = 60.0
+    request_timeout_default_value = 40.0
     request_timeout_env = 'JUPYTER_GATEWAY_REQUEST_TIMEOUT'
     request_timeout = Float(default_value=request_timeout_default_value, config=True,
         help="""The time allowed for HTTP request completion. (JUPYTER_GATEWAY_REQUEST_TIMEOUT env var)""")
@@ -205,7 +205,7 @@ class GatewayClient(SingletonConfigurable):
         return bool(os.environ.get(self.validate_cert_env, str(self.validate_cert_default_value)) not in ['no', 'false'])
 
     def __init__(self, **kwargs):
-        super(GatewayClient, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self._static_args = {}  # initialized on first use
 
     env_whitelist_default_value = ''
@@ -220,24 +220,58 @@ class GatewayClient(SingletonConfigurable):
     def _env_whitelist_default(self):
         return os.environ.get(self.env_whitelist_env, self.env_whitelist_default_value)
 
+    gateway_retry_interval_default_value = 1.0
+    gateway_retry_interval_env = 'JUPYTER_GATEWAY_RETRY_INTERVAL'
+    gateway_retry_interval = Float(default_value=gateway_retry_interval_default_value, config=True,
+        help="""The time allowed for HTTP reconnection with the Gateway server for the first time.
+                Next will be JUPYTER_GATEWAY_RETRY_INTERVAL multiplied by two in factor of numbers of retries
+                but less than JUPYTER_GATEWAY_RETRY_INTERVAL_MAX.
+                (JUPYTER_GATEWAY_RETRY_INTERVAL env var)""")
+
+    @default('gateway_retry_interval')
+    def gateway_retry_interval_default(self):
+        return float(os.environ.get('JUPYTER_GATEWAY_RETRY_INTERVAL', self.gateway_retry_interval_default_value))
+
+    gateway_retry_interval_max_default_value = 30.0
+    gateway_retry_interval_max_env = 'JUPYTER_GATEWAY_RETRY_INTERVAL_MAX'
+    gateway_retry_interval_max = Float(default_value=gateway_retry_interval_max_default_value, config=True,
+        help="""The maximum time allowed for HTTP reconnection retry with the Gateway server.
+                (JUPYTER_GATEWAY_RETRY_INTERVAL_MAX env var)""")
+
+    @default('gateway_retry_interval_max')
+    def gateway_retry_interval_max_default(self):
+        return float(os.environ.get('JUPYTER_GATEWAY_RETRY_INTERVAL_MAX', self.gateway_retry_interval_max_default_value))
+
+    gateway_retry_max_default_value = 5
+    gateway_retry_max_env = 'JUPYTER_GATEWAY_RETRY_MAX'
+    gateway_retry_max = Int(default_value=gateway_retry_max_default_value, config=True,
+        help="""The maximum retries allowed for HTTP reconnection with the Gateway server.
+                (JUPYTER_GATEWAY_RETRY_MAX env var)""")
+
+    @default('gateway_retry_max')
+    def gateway_retry_max_default(self):
+        return int(os.environ.get('JUPYTER_GATEWAY_RETRY_MAX', self.gateway_retry_max_default_value))
+
     @property
     def gateway_enabled(self):
         return bool(self.url is not None and len(self.url) > 0)
 
     # Ensure KERNEL_LAUNCH_TIMEOUT has a default value.
     KERNEL_LAUNCH_TIMEOUT = int(os.environ.get('KERNEL_LAUNCH_TIMEOUT', 40))
-    os.environ['KERNEL_LAUNCH_TIMEOUT'] = str(KERNEL_LAUNCH_TIMEOUT)
-
-    LAUNCH_TIMEOUT_PAD = int(os.environ.get('LAUNCH_TIMEOUT_PAD', 2))
 
     def init_static_args(self):
         """Initialize arguments used on every request.  Since these are static values, we'll
         perform this operation once.
 
         """
-        # Ensure that request timeout is at least "pad" greater than launch timeout.
-        if self.request_timeout < float(GatewayClient.KERNEL_LAUNCH_TIMEOUT + GatewayClient.LAUNCH_TIMEOUT_PAD):
-            self.request_timeout = float(GatewayClient.KERNEL_LAUNCH_TIMEOUT + GatewayClient.LAUNCH_TIMEOUT_PAD)
+        # Ensure that request timeout and KERNEL_LAUNCH_TIMEOUT are the same, taking the
+        #  greater value of the two.
+        if self.request_timeout < float(GatewayClient.KERNEL_LAUNCH_TIMEOUT):
+            self.request_timeout = float(GatewayClient.KERNEL_LAUNCH_TIMEOUT)
+        elif self.request_timeout > float(GatewayClient.KERNEL_LAUNCH_TIMEOUT):
+            GatewayClient.KERNEL_LAUNCH_TIMEOUT = int(self.request_timeout)
+        # Ensure any adjustments are reflected in env.
+        os.environ['KERNEL_LAUNCH_TIMEOUT'] = str(GatewayClient.KERNEL_LAUNCH_TIMEOUT)
 
         self._static_args['headers'] = json.loads(self.headers)
         if 'Authorization' not in self._static_args['headers'].keys():
@@ -280,18 +314,23 @@ def gateway_request(endpoint, **kwargs):
     # or the server is not running.
     # NOTE: We do this here since this handler is called during the Notebook's startup and subsequent refreshes
     # of the tree view.
-    except ConnectionRefusedError:
-        raise web.HTTPError(503, "Connection refused from Gateway server url '{}'.  " 
-              "Check to be sure the Gateway instance is running.".format(GatewayClient.instance().url))
+    except ConnectionRefusedError as e:
+        raise web.HTTPError(
+            503,
+            "Connection refused from Gateway server url '{}'.  Check to be sure the"
+            " Gateway instance is running.".format(GatewayClient.instance().url)
+        ) from e
     except HTTPError as e:
         # This can occur if the host is valid (e.g., foo.com) but there's nothing there.
         raise web.HTTPError(e.code, "Error attempting to connect to Gateway server url '{}'.  "
                        "Ensure gateway url is valid and the Gateway instance is running.".
-                            format(GatewayClient.instance().url))
-    except gaierror:
-        raise web.HTTPError(404, "The Gateway server specified in the gateway_url '{}' doesn't appear to be valid.  "
-                       "Ensure gateway url is valid and the Gateway instance is running.".
-                            format(GatewayClient.instance().url))
+                            format(GatewayClient.instance().url)) from e
+    except gaierror as e:
+        raise web.HTTPError(
+            404,
+            "The Gateway server specified in the gateway_url '{}' doesn't appear to be valid.  Ensure gateway "
+            "url is valid and the Gateway instance is running.".format(GatewayClient.instance().url)
+        ) from e
 
     raise gen.Return(response)
 
@@ -303,7 +342,7 @@ class GatewayKernelManager(MappingKernelManager):
     _kernels = {}
 
     def __init__(self, **kwargs):
-        super(GatewayKernelManager, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.base_endpoint = url_path_join(GatewayClient.instance().url, GatewayClient.instance().kernels_endpoint)
 
     def __contains__(self, kernel_id):
@@ -499,11 +538,20 @@ class GatewayKernelManager(MappingKernelManager):
 class GatewayKernelSpecManager(KernelSpecManager):
 
     def __init__(self, **kwargs):
-        super(GatewayKernelSpecManager, self).__init__(**kwargs)
-        self.base_endpoint = url_path_join(GatewayClient.instance().url,
-                                           GatewayClient.instance().kernelspecs_endpoint)
+        super().__init__(**kwargs)
+        base_endpoint = url_path_join(GatewayClient.instance().url,
+                                      GatewayClient.instance().kernelspecs_endpoint)
+
+        self.base_endpoint = GatewayKernelSpecManager._get_endpoint_for_user_filter(base_endpoint)
         self.base_resource_endpoint = url_path_join(GatewayClient.instance().url,
                                                     GatewayClient.instance().kernelspecs_resource_endpoint)
+
+    @staticmethod
+    def _get_endpoint_for_user_filter(default_endpoint):
+        kernel_user = os.environ.get('KERNEL_USERNAME')
+        if kernel_user:
+            return '?user='.join([default_endpoint, kernel_user])
+        return default_endpoint
 
     def _get_kernelspecs_endpoint_url(self, kernel_name=None):
         """Builds a url for the kernels endpoint
@@ -563,8 +611,10 @@ class GatewayKernelSpecManager(KernelSpecManager):
             if error.status_code == 404:
                 # Convert not found to KeyError since that's what the Notebook handler expects
                 # message is not used, but might as well make it useful for troubleshooting
-                raise KeyError('kernelspec {kernel_name} not found on Gateway server at: {gateway_url}'.
-                               format(kernel_name=kernel_name, gateway_url=GatewayClient.instance().url))
+                raise KeyError(
+                    'kernelspec {kernel_name} not found on Gateway server at: {gateway_url}'.
+                    format(kernel_name=kernel_name, gateway_url=GatewayClient.instance().url)
+                ) from error
             else:
                 raise
         else:
