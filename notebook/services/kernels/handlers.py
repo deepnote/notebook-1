@@ -388,8 +388,6 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
 
         # on new connections, flush the message buffer
         buffer_info = km.get_buffer(kernel_id, self.session_key)
-        self.log.debug("session_key: %s, ", self.session_key)
-        self.log.debug("buffer_info: %s, ", buffer_info)
 
         if buffer_info and buffer_info['session_key'] == self.session_key:
             self.log.info("Restoring connection for %s", self.session_key)
