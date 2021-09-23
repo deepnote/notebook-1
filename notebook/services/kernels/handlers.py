@@ -22,6 +22,7 @@ from notebook.utils import maybe_future, url_path_join, url_escape
 from ...base.handlers import APIHandler
 from ...base.zmqhandlers import AuthenticatedZMQStreamHandler, deserialize_binary_message
 
+
 class MainKernelHandler(APIHandler):
 
     @web.authenticated
@@ -45,7 +46,8 @@ class MainKernelHandler(APIHandler):
 
         kernel_id = yield maybe_future(km.start_kernel(kernel_name=model['name']))
         model = yield maybe_future(km.kernel_model(kernel_id))
-        location = url_path_join(self.base_url, 'api', 'kernels', url_escape(kernel_id))
+        location = url_path_join(self.base_url, 'api',
+                                 'kernels', url_escape(kernel_id))
         self.set_header('Location', location)
         self.set_status(201)
         self.finish(json.dumps(model, default=date_default))
@@ -95,7 +97,7 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
     '''There is one ZMQChannelsHandler per running kernel and it oversees all
     the sessions.
     '''
-    
+
     # class-level registry of open sessions
     # allows checking for conflict on session-id,
     # which is used as a zmq identity and must be unique.
@@ -126,9 +128,10 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
         identity = self.session.bsession
         for channel in ("iopub", "shell", "control", "stdin"):
             meth = getattr(km, "connect_" + channel)
-            self.channels[channel] = stream = meth(self.kernel_id, identity=identity)
+            self.channels[channel] = stream = meth(
+                self.kernel_id, identity=identity)
             stream.channel = channel
-    
+
     def nudge(self):
         """Nudge the zmq connections with kernel_info_requests
 
@@ -183,16 +186,19 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
         both_done.add_done_callback(cleanup)
 
         def on_shell_reply(msg):
-            self.log.debug("Nudge: shell info reply received: %s", self.kernel_id)
+            self.log.debug(
+                "Nudge: shell info reply received: %s", self.kernel_id)
             if not info_future.done():
-                self.log.debug("Nudge: resolving shell future: %s", self.kernel_id)
+                self.log.debug(
+                    "Nudge: resolving shell future: %s", self.kernel_id)
                 info_future.set_result(None)
 
         def on_iopub(msg):
             self.log.debug("Nudge: IOPub received: %s", self.kernel_id)
             if not iopub_future.done():
                 iopub_channel.stop_on_recv()
-                self.log.debug("Nudge: resolving iopub future: %s", self.kernel_id)
+                self.log.debug(
+                    "Nudge: resolving iopub future: %s", self.kernel_id)
                 iopub_future.set_result(None)
 
         iopub_channel.on_recv(on_iopub)
@@ -238,7 +244,8 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
         nudge_handle = loop.call_later(0, nudge, count=0)
 
         # resolve with a timeout if we get no response
-        future = gen.with_timeout(loop.time() + self.kernel_info_timeout, both_done)
+        future = gen.with_timeout(
+            loop.time() + self.kernel_info_timeout, both_done)
         # ensure we have no dangling resources or unresolved Futures in case of timeout
         future.add_done_callback(finish)
         return future
@@ -263,15 +270,16 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
         else:
             if not future.done():
                 self.log.debug("Waiting for pending kernel_info request")
-            future.add_done_callback(lambda f: self._finish_kernel_info(f.result()))
+            future.add_done_callback(
+                lambda f: self._finish_kernel_info(f.result()))
         return self._kernel_info_future
 
     def _handle_kernel_info_reply(self, msg):
         """process the kernel_info_reply
-        
+
         enabling msg spec adaptation, if necessary
         """
-        idents,msg = self.session.feed_identities(msg)
+        idents, msg = self.session.feed_identities(msg)
         try:
             msg = self.session.deserialize(msg)
         except:
@@ -282,28 +290,31 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
             info = msg['content']
             self.log.debug("Received kernel info: %s", info)
             if msg['msg_type'] != 'kernel_info_reply' or 'protocol_version' not in info:
-                self.log.error("Kernel info request failed, assuming current %s", info)
+                self.log.error(
+                    "Kernel info request failed, assuming current %s", info)
                 info = {}
             self._finish_kernel_info(info)
-        
+
         # close the kernel_info channel, we don't need it anymore
         if self.kernel_info_channel:
             self.kernel_info_channel.close()
         self.kernel_info_channel = None
-    
+
     def _finish_kernel_info(self, info):
         """Finish handling kernel_info reply
-        
+
         Set up protocol adaptation, if needed,
         and signal that connection can continue.
         """
-        protocol_version = info.get('protocol_version', client_protocol_version)
+        protocol_version = info.get(
+            'protocol_version', client_protocol_version)
         if protocol_version != client_protocol_version:
             self.session.adapt_version = int(protocol_version.split('.')[0])
-            self.log.info("Adapting from protocol version {protocol_version} (kernel {kernel_id}) to {client_protocol_version} (client).".format(protocol_version=protocol_version, kernel_id=self.kernel_id, client_protocol_version=client_protocol_version))
+            self.log.info("Adapting from protocol version {protocol_version} (kernel {kernel_id}) to {client_protocol_version} (client).".format(
+                protocol_version=protocol_version, kernel_id=self.kernel_id, client_protocol_version=client_protocol_version))
         if not self._kernel_info_future.done():
             self._kernel_info_future.set_result(info)
-    
+
     def initialize(self):
         super().initialize()
         self.zmq_stream = None
@@ -336,27 +347,28 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
         kernel = self.kernel_manager.get_kernel(self.kernel_id)
         self.session.key = kernel.session.key
         future = self.request_kernel_info()
-        
+
         def give_up():
             """Don't wait forever for the kernel to reply"""
             if future.done():
                 return
-            self.log.warning("Timeout waiting for kernel_info reply from %s", self.kernel_id)
+            self.log.warning(
+                "Timeout waiting for kernel_info reply from %s", self.kernel_id)
             future.set_result({})
         loop = IOLoop.current()
         loop.add_timeout(loop.time() + self.kernel_info_timeout, give_up)
         # actually wait for it
         yield future
-    
+
     @gen.coroutine
     def get(self, kernel_id):
         self.kernel_id = cast_unicode(kernel_id, 'ascii')
         yield super().get(kernel_id=kernel_id)
-    
+
     @gen.coroutine
     def _register_session(self):
         """Ensure we aren't creating a duplicate session.
-        
+
         If a previous identical session is still open, close it to avoid collisions.
         This is likely due to a client reconnecting from a lost network connection,
         where the socket on our side has not been cleaned up yet.
@@ -364,7 +376,8 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
         self.session_key = '%s:%s' % (self.kernel_id, self.session.session)
         stale_handler = self._open_sessions.get(self.session_key)
         if stale_handler:
-            self.log.warning("Replacing stale connection: %s", self.session_key)
+            self.log.warning("Replacing stale connection: %s",
+                             self.session_key)
             yield stale_handler.close()
         self._open_sessions[self.session_key] = self
 
@@ -375,15 +388,21 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
 
         # on new connections, flush the message buffer
         buffer_info = km.get_buffer(kernel_id, self.session_key)
+        self.log.debug("session_key: %s, ", self.session_key)
+        self.log.debug("buffer_info: %s, ", buffer_info)
+        self.log.debug("buffer_info:session_key %s",
+                       buffer_info['session_key'])
+
         if buffer_info and buffer_info['session_key'] == self.session_key:
             self.log.info("Restoring connection for %s", self.session_key)
             self.channels = buffer_info['channels']
             connected = self.nudge()
-            
+
             def replay(value):
                 replay_buffer = buffer_info['buffer']
                 if replay_buffer:
-                    self.log.info("Replaying %s buffered messages", len(replay_buffer))
+                    self.log.info("Replaying %s buffered messages",
+                                  len(replay_buffer))
                     for channel, msg_list in replay_buffer:
                         stream = self.channels[channel]
                         self._on_zmq_reply(stream, msg_list)
@@ -433,7 +452,8 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
         am = self.kernel_manager.allowed_message_types
         mt = msg['header']['msg_type']
         if am and mt not in am:
-            self.log.warning('Received message of type "%s", which is not allowed. Ignoring.' % mt)
+            self.log.warning(
+                'Received message of type "%s", which is not allowed. Ignoring.' % mt)
         else:
             stream = self.channels[channel]
             self.session.send(stream, msg)
@@ -442,12 +462,14 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
         idents, fed_msg_list = self.session.feed_identities(msg_list)
         msg = self.session.deserialize(fed_msg_list)
         parent = msg['parent_header']
+
         def write_stderr(error_message):
             self.log.warning(error_message)
             msg = self.session.msg("stream",
-                content={"text": error_message + '\n', "name": "stderr"},
-                parent=parent
-            )
+                                   content={"text": error_message +
+                                            '\n', "name": "stderr"},
+                                   parent=parent
+                                   )
             msg['channel'] = 'iopub'
             self.write_message(json.dumps(msg, default=date_default))
         channel = getattr(stream, 'channel', None)
@@ -463,7 +485,7 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
             self._iopub_data_exceeded = False
 
         if channel == 'iopub' and msg_type not in {'status', 'comm_open', 'execute_input'}:
-            
+
             # Remove the counts queued for removal.
             now = IOLoop.current().time()
             while len(self._iopub_window_byte_queue) > 0:
@@ -484,16 +506,19 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
             else:
                 byte_count = 0
             self._iopub_window_byte_count += byte_count
-            
-            # Queue a removal of the byte and message count for a time in the 
+
+            # Queue a removal of the byte and message count for a time in the
             # future, when we are no longer interested in it.
-            self._iopub_window_byte_queue.append((now + self.rate_limit_window, byte_count))
-            
+            self._iopub_window_byte_queue.append(
+                (now + self.rate_limit_window, byte_count))
+
             # Check the limits, set the limit flags, and reset the
             # message and data counts.
-            msg_rate = float(self._iopub_window_msg_count) / self.rate_limit_window
-            data_rate = float(self._iopub_window_byte_count) / self.rate_limit_window
-            
+            msg_rate = float(self._iopub_window_msg_count) / \
+                self.rate_limit_window
+            data_rate = float(self._iopub_window_byte_count) / \
+                self.rate_limit_window
+
             # Check the msg rate
             if self.iopub_msg_rate_limit > 0 and msg_rate > self.iopub_msg_rate_limit:
                 if not self._iopub_msgs_exceeded:
@@ -537,7 +562,7 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
                     self._iopub_data_exceeded = False
                     if not self._iopub_msgs_exceeded:
                         self.log.warning("iopub messages resumed")
-        
+
             # If either of the limit flags are set, do not send the message.
             if self._iopub_msgs_exceeded or self._iopub_data_exceeded:
                 # we didn't send it, remove the current message from the calculus
@@ -569,7 +594,8 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
 
             # start buffering instead of closing if this was the last connection
             if km._kernel_connections[self.kernel_id] == 0:
-                km.start_buffering(self.kernel_id, self.session_key, self.channels)
+                km.start_buffering(
+                    self.kernel_id, self.session_key, self.channels)
                 self._close_future.set_result(None)
                 return
 
@@ -592,8 +618,8 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
             # that all messages from the stopped kernel have been delivered
             iopub.flush()
         msg = self.session.msg("status",
-            {'execution_state': status}
-        )
+                               {'execution_state': status}
+                               )
         msg['channel'] = 'iopub'
         self.write_message(json.dumps(msg, default=date_default))
 
@@ -606,9 +632,9 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
         self._send_status_message('dead')
 
 
-#-----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # URL to handler mappings
-#-----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 
 
 _kernel_id_regex = r"(?P<kernel_id>\w+-\w+-\w+-\w+-\w+)"
@@ -617,6 +643,7 @@ _kernel_action_regex = r"(?P<action>restart|interrupt)"
 default_handlers = [
     (r"/api/kernels", MainKernelHandler),
     (r"/api/kernels/%s" % _kernel_id_regex, KernelHandler),
-    (r"/api/kernels/%s/%s" % (_kernel_id_regex, _kernel_action_regex), KernelActionHandler),
+    (r"/api/kernels/%s/%s" %
+     (_kernel_id_regex, _kernel_action_regex), KernelActionHandler),
     (r"/api/kernels/%s/channels" % _kernel_id_regex, ZMQChannelsHandler),
 ]
