@@ -390,8 +390,6 @@ class ZMQChannelsHandler(AuthenticatedZMQStreamHandler):
         buffer_info = km.get_buffer(kernel_id, self.session_key)
         self.log.debug("session_key: %s, ", self.session_key)
         self.log.debug("buffer_info: %s, ", buffer_info)
-        self.log.debug("buffer_info:session_key %s",
-                       buffer_info['session_key'])
 
         if buffer_info and buffer_info['session_key'] == self.session_key:
             self.log.info("Restoring connection for %s", self.session_key)
