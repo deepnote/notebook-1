@@ -261,8 +261,8 @@ class MappingKernelManager(MultiKernelManager):
             return
 
         buffer_info = self._kernel_buffers[kernel_id]
-        self.log.debug("buffer_info %s", str(buffer_info))
-        self.log.debug("session_key %s", str(buffer_info))
+        self.log.debug("buffer_info - key %s", str(buffer_info['session_key']))
+        self.log.debug("session_key %s", str(session_key))
 
         if buffer_info['session_key'] == session_key:
             # remove buffer
